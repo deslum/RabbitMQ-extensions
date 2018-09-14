@@ -1,17 +1,16 @@
 #!/usr/bin/python3
 # -*- coding: utf-8 -*-
 import pika
-
-msg = "TestTTL"
+from threading import Thread
+from time import sleep
 
 HOST = 'localhost'
 USER = 'guest'
 PASSWORD = 'guest'
 VHOST = '/'
-TTL = 10000  # milliseconds
 
-DEAD_LETTER_QUEUE = 'dead_letter'
-TTL_QUEUE = 'ttl_queue'
+queue = 'blocking_queue'
+
 
 class RMQSender():
     def __init__(self, exchange='messages', host='localhost', user='guest', password='guest', virtual_host='/'):
@@ -32,24 +31,59 @@ class RMQSender():
         self.channel.exchange_declare(
             exchange=self.exchange, exchange_type='direct', durable=True, auto_delete=False)
         self._queues_declare()
-        
+
+    def callback(self, ch, method, properties, body):
+        print("[x] Received: {0}".format(body))
+
+    def consume(self, queue):
+        self.channel.basic_consume(self.callback, queue=queue, no_ack=True)
+
+    def start(self):
+        self.channel.start_consuming()
+
     def _queues_declare(self):
-        self.channel.queue_declare(DEAD_LETTER_QUEUE, durable=True, auto_delete=False)
         self.channel.queue_declare(
-            queue=TTL_QUEUE, durable=True, auto_delete=False, arguments={
-                'x-dead-letter-exchange': 'messages',
-                'x-dead-letter-routing-key': DEAD_LETTER_QUEUE, })
-        for queue in [TTL_QUEUE, DEAD_LETTER_QUEUE]:
-            self.channel.queue_bind(exchange=self.exchange,
+            queue, durable=True, auto_delete=False)
+        self.channel.queue_bind(exchange=self.exchange,
                                 queue=queue, routing_key=queue)
 
-    def send_msg(self, msg, queue, ttl=0):
-        properties = pika.BasicProperties(delivery_mode=2, expiration=str(ttl))
+    def block(self):
+        pass
+    
+    def unblock(self):
+        pass
+
+    def blocked_connection(self):
+        self.channel.connection.add_on_connection_blocked_callback(self.block)
+    
+    def unblocked_connection(self):
+        self.channel.connection.add_on_connection_blocked_callback(self.unblock)
+
+    def send_msg(self, msg, queue):
+        properties = pika.BasicProperties(delivery_mode=2)
         self.channel.basic_publish(
             exchange=self.exchange, routing_key=queue, body=msg, properties=properties)
 
 
-if __name__ == '__main__':
+def consumer():
     rmq_connection = RMQSender(
         host=HOST, user=USER, password=PASSWORD, virtual_host=VHOST)
-    rmq_connection.send_msg(msg,TTL_QUEUE, ttl=TTL)
+    rmq_connection.consume(queue)
+    rmq_connection.start()
+
+
+def producer():
+    rmq_connection = RMQSender(
+        host=HOST, user=USER, password=PASSWORD, virtual_host=VHOST)
+    rmq_connection.block()
+    rmq_connection.unblock()
+    for i in range(6):
+        if i == 3:
+            rmq_connection.block()
+        rmq_connection.send_msg("test{}".format(i), queue)
+
+
+if __name__ == '__main__':
+    Thread(target=producer).start()
+    sleep(10)
+    Thread(target=consumer).start()
